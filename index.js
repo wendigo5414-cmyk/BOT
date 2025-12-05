@@ -1,13 +1,24 @@
 const http = require('http');
+const https = require('https');
 const { Client, GatewayIntentBits, EmbedBuilder } = require("discord.js");
 const { MongoClient } = require("mongodb");
 
+// Keep-alive server
 http.createServer((req, res) => {
     res.writeHead(200, { 'Content-Type': 'text/plain' });
     res.end('Bot is running!');
 }).listen(3000, () => {
     console.log('Keep-alive server running on port 3000');
 });
+
+// Self-ping every 5 minutes to prevent sleep
+setInterval(() => {
+    https.get('https://bot-3-1tgd.onrender.com', (res) => {
+        console.log('Self-ping successful');
+    }).on('error', (err) => {
+        console.log('Self-ping failed:', err.message);
+    });
+}, 5 * 60 * 1000); // 5 minutes
 
 const client = new Client({
     intents: [
@@ -20,7 +31,7 @@ const client = new Client({
 
 let vouchCollection;
 let cooldownCollection;
-const COOLDOWN_TIME = 10 * 60 * 1000; // 10 minutes in milliseconds
+const COOLDOWN_TIME = 10 * 60 * 1000;
 
 async function connectDB() {
     const mongoClient = new MongoClient(process.env.MONGODB_URI);
@@ -77,7 +88,6 @@ client.on("messageCreate", async (message) => {
         let user = message.mentions.users.first();
         if (!user) return message.reply("Tag someone to vouch!");
 
-        // Check cooldown
         let cooldown = await checkCooldown(message.author.id);
         if (cooldown) {
             let minutes = Math.floor(cooldown / 60000);
@@ -119,7 +129,6 @@ client.on("messageCreate", async (message) => {
         let user = message.mentions.users.first();
         if (!user) return message.reply("Tag someone to vouch!");
 
-        // Check cooldown
         let cooldown = await checkCooldown(message.author.id);
         if (cooldown) {
             let minutes = Math.floor(cooldown / 60000);
