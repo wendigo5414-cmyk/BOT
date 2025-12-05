@@ -29,16 +29,16 @@ async function connectDB() {
 }
 
 async function getVouch(userId) {
-    let data = await vouchCollection.findOne({ oderId: userId });
+    let data = await vouchCollection.findOne({ userId: userId });
     if (!data) {
-        data = { oderId: oderId, plus: 0, minus: 0, history: [] };
+        data = { userId: userId, plus: 0, minus: 0, history: [] };
         await vouchCollection.insertOne(data);
     }
     return data;
 }
 
 async function updateVouch(userId, data) {
-    await vouchCollection.updateOne({ oderId: userId }, { $set: data }, { upsert: true });
+    await vouchCollection.updateOne({ userId: userId }, { $set: data }, { upsert: true });
 }
 
 client.once("ready", () => {
