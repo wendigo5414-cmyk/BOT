@@ -222,8 +222,20 @@ client.on("messageCreate", async (message) => {
         let user = message.mentions.users.first();
         if (!user) return message.reply("Mention a user.");
 
+        // Add to staff database
         await addStaff(user.id);
-        return message.reply(`✅ ${user.tag} added as staff.`);
+
+        // Assign staff role
+        const member = message.guild.members.cache.get(user.id);
+        if (member) {
+            try {
+                await member.roles.add("1449394350009356481");
+            } catch (error) {
+                console.error("Failed to assign role:", error);
+            }
+        }
+
+        return message.reply(`✅ ${user.tag} added as staff and role assigned.`);
     }
 
     if (cmd === "?removestaff") {
