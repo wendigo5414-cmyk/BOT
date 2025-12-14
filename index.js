@@ -108,6 +108,52 @@ client.on("messageCreate", async (message) => {
     const args = message.content.trim().split(/ +/g);
     const cmd = args.shift()?.toLowerCase();
 
+    // ===== HELP COMMAND =====
+
+    if (cmd === "?help" || cmd === "?h") {
+        const embed = new EmbedBuilder()
+            .setTitle("📋 Goblox Bot Commands")
+            .setColor("Blue")
+            .setDescription("Here are all available commands:")
+            .addFields(
+                {
+                    name: "**Vouch Commands**",
+                    value: 
+                        "`+vouch @user [description]` - Give a positive vouch\n" +
+                        "`-vouch @user [description]` - Give a negative vouch\n" +
+                        "`+p [@user]` - View vouch profile (yourself or mentioned user)",
+                    inline: false
+                },
+                {
+                    name: "**Staff Management** (Admin Only)",
+                    value:
+                        "`?newstaff @user` - Add a user as staff\n" +
+                        "`?removestaff @user` - Remove a user from staff\n" +
+                        "`?staff` - List all staff members",
+                    inline: false
+                },
+                {
+                    name: "**Moderation Commands** (Staff Only)",
+                    value:
+                        "`?ban @user [reason]` - Ban a user\n" +
+                        "`?kick @user [reason]` - Kick a user\n" +
+                        "`?timeout @user <time>` - Timeout a user (e.g., 10m or 1h)\n" +
+                        "`?untimeout @user` - Remove timeout from a user\n" +
+                        "`?warn @user [reason]` - Warn a user",
+                    inline: false
+                },
+                {
+                    name: "**Other Commands**",
+                    value: "`?help` or `?h` - Show this help menu",
+                    inline: false
+                }
+            )
+            .setFooter({ text: "Goblox Bot | Made with ❤️" })
+            .setTimestamp();
+
+        return message.reply({ embeds: [embed] });
+    }
+
     // ===== VOUCH COMMANDS (UNCHANGED) =====
 
     if (cmd === "+vouch" || cmd === "-vouch") {
