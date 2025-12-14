@@ -274,14 +274,7 @@ client.on("messageCreate", async (message) => {
                         "`?take @user <amount>` - Take robux from a user (Staff)",
                     inline: false
                 },
-                {
-                    name: "**Giveaway Commands**",
-                    value:
-                        "`/creategiveaway <prize> <winners> <image> <host> <channel> <timer>` - Create giveaway (Staff)\n" +
-                        "`/reroll` - Reroll giveaway winners (Staff)\n" +
-                        "`/endgiveaway` - End active giveaway (Staff)",
-                    inline: false
-                },
+
                 {
                     name: "**Other Commands**",
                     value: 
@@ -322,6 +315,16 @@ client.on("messageCreate", async (message) => {
                         "`?untimeout @user` - Remove timeout from a user\n" +
                         "`?warn @user [reason]` - Warn a user\n" +
                         "`?clear <1-1000>` - Delete messages from the channel",
+                    inline: false
+                },
+                {
+                    name: "**Giveaway Commands** (Staff Only)",
+                    value:
+                        "`?creategiveaway <prize> <winners> <image> [@host] [#channel] <timer>` - Create giveaway\n" +
+                        "`?reroll` - Reroll giveaway winners\n" +
+                        "`?endgiveaway` - End active giveaway\n\n" +
+                        "**Timer formats:** 10s, 5m, 1h, 1d\n" +
+                        "**Example:** `?creategiveaway 1000 3 https://image.url @host #channel 10m`",
                     inline: false
                 }
             )
@@ -453,12 +456,12 @@ client.on("messageCreate", async (message) => {
 
     // ===== GIVEAWAY COMMANDS =====
 
-    if (cmd === "/creategiveaway") {
+    if (cmd === "?creategiveaway") {
         if (!(await isStaff(message.author.id, message.member)))
             return message.reply("Staff only command.");
 
-        if (activeGiveaway) {
-            return message.reply("❌ There's already an active giveaway! End it first with `/endgiveaway`");
+        if (!activeGiveaway) {
+            return message.reply("❌ There's already an active giveaway! End it first with `?endgiveaway`");
         }
 
         const prize = parseInt(args[0]);
@@ -469,7 +472,7 @@ client.on("messageCreate", async (message) => {
         const timer = args[args.length - 1];
 
         if (!prize || !winners || !timer) {
-            return message.reply("Usage: `/creategiveaway <prize> <winners> <image> [@host] [#channel] <timer>`\nTimer format: 10s, 5m, 1h, 1d");
+            return message.reply("Usage: `?creategiveaway <prize> <winners> <image> [@host] [#channel] <timer>`\nTimer format: 10s, 5m, 1h, 1d");
         }
 
         const duration = parseTime(timer);
@@ -519,7 +522,7 @@ client.on("messageCreate", async (message) => {
         }, duration);
     }
 
-    if (cmd === "/reroll") {
+    if (cmd === "?reroll") {
         if (!(await isStaff(message.author.id, message.member)))
             return message.reply("Staff only command.");
 
