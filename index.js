@@ -1,6 +1,6 @@
 const http = require('http');
 const https = require('https');
-const { Client, GatewayIntentBits, EmbedBuilder, PermissionsBitField } = require("discord.js");
+const { Client, GatewayIntentBits, EmbedBuilder, PermissionsBitField, ActionRowBuilder, ButtonBuilder, ButtonStyle } = require("discord.js");
 const { MongoClient } = require("mongodb");
 
 // Keep-alive server
@@ -33,8 +33,13 @@ let vouchCollection;
 let cooldownCollection;
 let staffCollection;
 let warnCollection;
+let balanceCollection;
+let giveawayCollection;
 
 const COOLDOWN_TIME = 10 * 60 * 1000;
+const STAFF_ROLE_ID = "1449394350009356481";
+
+let activeGiveaway = null;
 
 async function connectDB() {
     const mongoClient = new MongoClient(process.env.MONGODB_URI);
@@ -45,11 +50,13 @@ async function connectDB() {
     cooldownCollection = db.collection("cooldowns");
     staffCollection = db.collection("staff");
     warnCollection = db.collection("warnings");
+    balanceCollection = db.collection("balances");
+    giveawayCollection = db.collection("giveaways");
 
     console.log("Connected to MongoDB!");
 }
 
-// ===== VOUCH FUNCTIONS (UNCHANGED) =====
+// ===== VOUCH FUNCTIONS =====
 
 async function getVouch(userId) {
     let data = await vouchCollection.findOne({ userId });
@@ -82,8 +89,10 @@ async function setCooldown(oderId) {
 
 // ===== STAFF FUNCTIONS =====
 
-async function isStaff(userId) {
-    return !!(await staffCollection.findOne({ userId }));
+async function isStaff(userId, member) {
+    const hasRole = member?.roles?.cache.has(STAFF_ROLE_ID);
+    const inDB = !!(await staffCollection.findOne({ userId }));
+    return hasRole || inDB;
 }
 
 async function addStaff(userId) {
@@ -94,10 +103,142 @@ async function removeStaff(userId) {
     await staffCollection.deleteOne({ userId });
 }
 
+// ===== BALANCE FUNCTIONS =====
+
+async function getBalance(userId) {
+    let data = await balanceCollection.findOne({ userId });
+    if (!data) {
+        data = { userId, robux: 0 };
+        await balanceCollection.insertOne(data);
+    }
+    return data;
+}
+
+async function addBalance(userId, amount) {
+    await balanceCollection.updateOne(
+        { userId },
+        { $inc: { robux: amount } },
+        { upsert: true }
+    );
+}
+
+async function setBalance(userId, amount) {
+    await balanceCollection.updateOne(
+        { userId },
+        { $set: { robux: amount } },
+        { upsert: true }
+    );
+}
+
+// ===== GIVEAWAY FUNCTIONS =====
+
+function parseTime(timeStr) {
+    const match = timeStr.match(/^(\d+)([smhd])$/);
+    if (!match) return null;
+    
+    const value = parseInt(match[1]);
+    const unit = match[2];
+    
+    const multipliers = {
+        s: 1000,
+        m: 60000,
+        h: 3600000,
+        d: 86400000
+    };
+    
+    return value * multipliers[unit];
+}
+
+async function endGiveaway(channel, giveaway, reroll = false) {
+    if (!giveaway.participants || giveaway.participants.length === 0) {
+        return channel.send("❌ No one participated in the giveaway!");
+    }
+
+    const winners = [];
+    const participants = [...giveaway.participants];
+    
+    for (let i = 0; i < Math.min(giveaway.winners, participants.length); i++) {
+        const randomIndex = Math.floor(Math.random() * participants.length);
+        winners.push(participants[randomIndex]);
+        participants.splice(randomIndex, 1);
+    }
+
+    // Award robux to winners
+    for (const winnerId of winners) {
+        await addBalance(winnerId, giveaway.prize);
+    }
+
+    const winnerMentions = winners.map(id => `<@${id}>`).join(", ");
+
+    const endEmbed = new EmbedBuilder()
+        .setTitle("🎉 GIVEAWAY ENDED 🎉")
+        .setDescription(`**Prize:** ${giveaway.prize} Robux`)
+        .addFields(
+            { name: "Winners", value: winnerMentions || "None" },
+            { name: "Hosted by", value: `<@${giveaway.host}>` }
+        )
+        .setColor("Gold")
+        .setTimestamp();
+
+    if (giveaway.image) {
+        endEmbed.setImage(giveaway.image);
+    }
+
+    await channel.send({ content: `🎊 Congratulations ${winnerMentions}!`, embeds: [endEmbed] });
+
+    if (reroll) {
+        await channel.send(`🔄 Giveaway rerolled! New winners: ${winnerMentions}`);
+    }
+
+    // Clear active giveaway
+    activeGiveaway = null;
+    await giveawayCollection.deleteOne({ messageId: giveaway.messageId });
+}
+
 // ===== BOT READY =====
 
-client.once("ready", () => {
+client.once("ready", async () => {
     console.log(`Bot is online as ${client.user.tag}`);
+    
+    // Check for active giveaways on restart
+    const giveaway = await giveawayCollection.findOne({});
+    if (giveaway) {
+        activeGiveaway = giveaway;
+        const timeLeft = giveaway.endTime - Date.now();
+        
+        if (timeLeft > 0) {
+            setTimeout(async () => {
+                const channel = client.channels.cache.get(giveaway.channelId);
+                if (channel) await endGiveaway(channel, giveaway);
+            }, timeLeft);
+        }
+    }
+});
+
+// ===== BUTTON INTERACTION =====
+
+client.on("interactionCreate", async (interaction) => {
+    if (!interaction.isButton()) return;
+
+    if (interaction.customId === "join_giveaway") {
+        if (!activeGiveaway) {
+            return interaction.reply({ content: "This giveaway has ended!", ephemeral: true });
+        }
+
+        const userId = interaction.user.id;
+        
+        if (activeGiveaway.participants.includes(userId)) {
+            return interaction.reply({ content: "You already joined this giveaway!", ephemeral: true });
+        }
+
+        activeGiveaway.participants.push(userId);
+        await giveawayCollection.updateOne(
+            { messageId: activeGiveaway.messageId },
+            { $push: { participants: userId } }
+        );
+
+        await interaction.reply({ content: "✅ You joined the giveaway! Good luck!", ephemeral: true });
+    }
 });
 
 // ===== COMMAND HANDLER =====
@@ -108,7 +249,7 @@ client.on("messageCreate", async (message) => {
     const args = message.content.trim().split(/ +/g);
     const cmd = args.shift()?.toLowerCase();
 
-    // ===== HELP COMMAND =====
+    // ===== HELP COMMANDS =====
 
     if (cmd === "?help" || cmd === "?h") {
         const embed = new EmbedBuilder()
@@ -121,9 +262,49 @@ client.on("messageCreate", async (message) => {
                     value: 
                         "`+vouch @user [description]` - Give a positive vouch\n" +
                         "`-vouch @user [description]` - Give a negative vouch\n" +
-                        "`+p [@user]` - View vouch profile (yourself or mentioned user)",
+                        "`+p [@user]` - View vouch profile",
                     inline: false
                 },
+                {
+                    name: "**Currency Commands**",
+                    value:
+                        "`?balance [@user]` - Check robux balance\n" +
+                        "`?give @user <amount>` - Give robux to a user (Staff)\n" +
+                        "`?set @user <amount>` - Set user's robux balance (Staff)\n" +
+                        "`?take @user <amount>` - Take robux from a user (Staff)",
+                    inline: false
+                },
+                {
+                    name: "**Giveaway Commands**",
+                    value:
+                        "`/creategiveaway <prize> <winners> <image> <host> <channel> <timer>` - Create giveaway (Staff)\n" +
+                        "`/reroll` - Reroll giveaway winners (Staff)\n" +
+                        "`/endgiveaway` - End active giveaway (Staff)",
+                    inline: false
+                },
+                {
+                    name: "**Other Commands**",
+                    value: 
+                        "`?help` or `?h` - Show this help menu\n" +
+                        "`?modhelp` or `?mp` - Show moderation commands",
+                    inline: false
+                }
+            )
+            .setFooter({ text: "Goblox Bot | Made with ❤️" })
+            .setTimestamp();
+
+        return message.reply({ embeds: [embed] });
+    }
+
+    if (cmd === "?modhelp" || cmd === "?mp") {
+        if (!(await isStaff(message.author.id, message.member)))
+            return message.reply("Staff only command.");
+
+        const embed = new EmbedBuilder()
+            .setTitle("🛡️ Moderation Commands")
+            .setColor("Red")
+            .setDescription("Staff & Admin commands:")
+            .addFields(
                 {
                     name: "**Staff Management** (Admin Only)",
                     value:
@@ -139,22 +320,18 @@ client.on("messageCreate", async (message) => {
                         "`?kick @user [reason]` - Kick a user\n" +
                         "`?timeout @user <time>` - Timeout a user (e.g., 10m or 1h)\n" +
                         "`?untimeout @user` - Remove timeout from a user\n" +
-                        "`?warn @user [reason]` - Warn a user",
-                    inline: false
-                },
-                {
-                    name: "**Other Commands**",
-                    value: "`?help` or `?h` - Show this help menu",
+                        "`?warn @user [reason]` - Warn a user\n" +
+                        "`?clear <1-1000>` - Delete messages from the channel",
                     inline: false
                 }
             )
-            .setFooter({ text: "Goblox Bot | Made with ❤️" })
+            .setFooter({ text: "Goblox Bot | Moderation Panel" })
             .setTimestamp();
 
         return message.reply({ embeds: [embed] });
     }
 
-    // ===== VOUCH COMMANDS (UNCHANGED) =====
+    // ===== VOUCH COMMANDS =====
 
     if (cmd === "+vouch" || cmd === "-vouch") {
         let user = message.mentions.users.first();
@@ -213,6 +390,159 @@ client.on("messageCreate", async (message) => {
         return message.reply({ embeds: [embed] });
     }
 
+    // ===== BALANCE COMMANDS =====
+
+    if (cmd === "?balance" || cmd === "?bal") {
+        let user = message.mentions.users.first() || message.author;
+        let data = await getBalance(user.id);
+
+        const embed = new EmbedBuilder()
+            .setTitle(`💰 ${user.username}'s Balance`)
+            .setDescription(`**Robux:** ${data.robux} R$`)
+            .setColor("Green")
+            .setThumbnail(user.displayAvatarURL())
+            .setTimestamp();
+
+        return message.reply({ embeds: [embed] });
+    }
+
+    if (cmd === "?give") {
+        if (!(await isStaff(message.author.id, message.member)))
+            return message.reply("Staff only command.");
+
+        let user = message.mentions.users.first();
+        let amount = parseInt(args[1]);
+
+        if (!user || !amount || amount <= 0)
+            return message.reply("Usage: `?give @user <amount>`");
+
+        await addBalance(user.id, amount);
+
+        return message.reply(`✅ Given ${amount} Robux to <@${user.id}>`);
+    }
+
+    if (cmd === "?set") {
+        if (!(await isStaff(message.author.id, message.member)))
+            return message.reply("Staff only command.");
+
+        let user = message.mentions.users.first();
+        let amount = parseInt(args[1]);
+
+        if (!user || amount < 0)
+            return message.reply("Usage: `?set @user <amount>`");
+
+        await setBalance(user.id, amount);
+
+        return message.reply(`✅ Set <@${user.id}>'s balance to ${amount} Robux`);
+    }
+
+    if (cmd === "?take") {
+        if (!(await isStaff(message.author.id, message.member)))
+            return message.reply("Staff only command.");
+
+        let user = message.mentions.users.first();
+        let amount = parseInt(args[1]);
+
+        if (!user || !amount || amount <= 0)
+            return message.reply("Usage: `?take @user <amount>`");
+
+        await addBalance(user.id, -amount);
+
+        return message.reply(`✅ Taken ${amount} Robux from <@${user.id}>`);
+    }
+
+    // ===== GIVEAWAY COMMANDS =====
+
+    if (cmd === "/creategiveaway") {
+        if (!(await isStaff(message.author.id, message.member)))
+            return message.reply("Staff only command.");
+
+        if (activeGiveaway) {
+            return message.reply("❌ There's already an active giveaway! End it first with `/endgiveaway`");
+        }
+
+        const prize = parseInt(args[0]);
+        const winners = parseInt(args[1]);
+        const image = args[2];
+        const host = message.mentions.users.first() || message.author;
+        const channel = message.mentions.channels.first() || message.channel;
+        const timer = args[args.length - 1];
+
+        if (!prize || !winners || !timer) {
+            return message.reply("Usage: `/creategiveaway <prize> <winners> <image> [@host] [#channel] <timer>`\nTimer format: 10s, 5m, 1h, 1d");
+        }
+
+        const duration = parseTime(timer);
+        if (!duration) {
+            return message.reply("Invalid timer format! Use: 10s, 5m, 1h, or 1d");
+        }
+
+        const endTime = Date.now() + duration;
+
+        const giveawayEmbed = new EmbedBuilder()
+            .setTitle("🎉 GIVEAWAY 🎉")
+            .setDescription(`**Prize:** ${prize} Robux\n**Winners:** ${winners}\n**Hosted by:** <@${host.id}>\n**Ends:** <t:${Math.floor(endTime / 1000)}:R>`)
+            .setColor("Purple")
+            .setFooter({ text: "Click the button below to join!" })
+            .setTimestamp(endTime);
+
+        if (image && image.startsWith("http")) {
+            giveawayEmbed.setImage(image);
+        }
+
+        const button = new ActionRowBuilder().addComponents(
+            new ButtonBuilder()
+                .setCustomId("join_giveaway")
+                .setLabel("🎉 Join Giveaway")
+                .setStyle(ButtonStyle.Primary)
+        );
+
+        const giveawayMsg = await channel.send({ embeds: [giveawayEmbed], components: [button] });
+
+        activeGiveaway = {
+            messageId: giveawayMsg.id,
+            channelId: channel.id,
+            prize: prize,
+            winners: winners,
+            host: host.id,
+            image: image && image.startsWith("http") ? image : null,
+            endTime: endTime,
+            participants: []
+        };
+
+        await giveawayCollection.insertOne(activeGiveaway);
+
+        message.reply(`✅ Giveaway created in <#${channel.id}>!`);
+
+        setTimeout(async () => {
+            await endGiveaway(channel, activeGiveaway);
+        }, duration);
+    }
+
+    if (cmd === "/reroll") {
+        if (!(await isStaff(message.author.id, message.member)))
+            return message.reply("Staff only command.");
+
+        if (!activeGiveaway) {
+            return message.reply("❌ No active giveaway to reroll!");
+        }
+
+        await endGiveaway(message.channel, activeGiveaway, true);
+    }
+
+    if (cmd === "/endgiveaway") {
+        if (!(await isStaff(message.author.id, message.member)))
+            return message.reply("Staff only command.");
+
+        if (!activeGiveaway) {
+            return message.reply("❌ No active giveaway to end!");
+        }
+
+        const channel = client.channels.cache.get(activeGiveaway.channelId);
+        await endGiveaway(channel, activeGiveaway);
+        message.reply("✅ Giveaway ended!");
+    }
+
     // ===== STAFF PANEL =====
 
     if (cmd === "?newstaff") {
@@ -222,14 +552,12 @@ client.on("messageCreate", async (message) => {
         let user = message.mentions.users.first();
         if (!user) return message.reply("Mention a user.");
 
-        // Add to staff database
         await addStaff(user.id);
 
-        // Assign staff role
         const member = message.guild.members.cache.get(user.id);
         if (member) {
             try {
-                await member.roles.add("1449394350009356481");
+                await member.roles.add(STAFF_ROLE_ID);
             } catch (error) {
                 console.error("Failed to assign role:", error);
             }
@@ -246,6 +574,16 @@ client.on("messageCreate", async (message) => {
         if (!user) return message.reply("Mention a user.");
 
         await removeStaff(user.id);
+
+        const member = message.guild.members.cache.get(user.id);
+        if (member) {
+            try {
+                await member.roles.remove(STAFF_ROLE_ID);
+            } catch (error) {
+                console.error("Failed to remove role:", error);
+            }
+        }
+
         return message.reply(`❌ ${user.tag} removed from staff.`);
     }
 
@@ -258,8 +596,8 @@ client.on("messageCreate", async (message) => {
 
     // ===== MOD COMMANDS (STAFF ONLY) =====
 
-    if (["?ban", "?kick", "?timeout", "?untimeout", "?warn"].includes(cmd)) {
-        if (!(await isStaff(message.author.id)))
+    if (["?ban", "?kick", "?timeout", "?untimeout", "?warn", "?clear"].includes(cmd)) {
+        if (!(await isStaff(message.author.id, message.member)))
             return message.reply("Staff only command.");
     }
 
@@ -308,6 +646,26 @@ client.on("messageCreate", async (message) => {
         });
 
         return message.reply(`⚠ Warned ${user.tag}`);
+    }
+
+    if (cmd === "?clear") {
+        let amount = parseInt(args[0]);
+        
+        if (!amount || amount < 1 || amount > 1000) {
+            return message.reply("Please provide a number between 1 and 1000.");
+        }
+
+        try {
+            await message.delete();
+            const fetched = await message.channel.messages.fetch({ limit: amount });
+            await message.channel.bulkDelete(fetched, true);
+
+            const reply = await message.channel.send(`🗑️ Cleared ${fetched.size} messages.`);
+            setTimeout(() => reply.delete().catch(() => {}), 3000);
+        } catch (error) {
+            console.error("Clear error:", error);
+            return message.channel.send("Failed to clear messages. (Messages older than 14 days cannot be bulk deleted)");
+        }
     }
 });
 
