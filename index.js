@@ -203,14 +203,17 @@ client.once("ready", async () => {
     // Check for active giveaways on restart
     const giveaway = await giveawayCollection.findOne({});
     if (giveaway) {
-        activeGiveaway = giveaway;
         const timeLeft = giveaway.endTime - Date.now();
         
         if (timeLeft > 0) {
+            activeGiveaway = giveaway;
             setTimeout(async () => {
                 const channel = client.channels.cache.get(giveaway.channelId);
                 if (channel) await endGiveaway(channel, giveaway);
             }, timeLeft);
+        } else {
+            // Giveaway already expired, clean it up
+            await giveawayCollection.deleteOne({ messageId: giveaway.messageId });
         }
     }
 });
@@ -320,11 +323,11 @@ client.on("messageCreate", async (message) => {
                 {
                     name: "**Giveaway Commands** (Staff Only)",
                     value:
-                        "`?creategiveaway <prize> <winners> <image> [@host] [#channel] <timer>` - Create giveaway\n" +
+                        "`?creategiveaway <prize> <winners> [@host] [#channel] <timer>` - Create giveaway (attach image)\n" +
                         "`?reroll` - Reroll giveaway winners\n" +
                         "`?endgiveaway` - End active giveaway\n\n" +
                         "**Timer formats:** 10s, 5m, 1h, 1d\n" +
-                        "**Example:** `?creategiveaway 1000 3 https://image.url @host #channel 10m`",
+                        "**Example:** `?creategiveaway 1000 3 @host #channel 10m` (with image attached)",
                     inline: false
                 }
             )
@@ -460,19 +463,21 @@ client.on("messageCreate", async (message) => {
         if (!(await isStaff(message.author.id, message.member)))
             return message.reply("Staff only command.");
 
-        if (!activeGiveaway) {
+        if (activeGiveaway) {
             return message.reply("❌ There's already an active giveaway! End it first with `?endgiveaway`");
         }
 
         const prize = parseInt(args[0]);
         const winners = parseInt(args[1]);
-        const image = args[2];
         const host = message.mentions.users.first() || message.author;
         const channel = message.mentions.channels.first() || message.channel;
         const timer = args[args.length - 1];
+        
+        // Get image from message attachment
+        const image = message.attachments.first()?.url || null;
 
         if (!prize || !winners || !timer) {
-            return message.reply("Usage: `?creategiveaway <prize> <winners> <image> [@host] [#channel] <timer>`\nTimer format: 10s, 5m, 1h, 1d");
+            return message.reply("Usage: `?creategiveaway <prize> <winners> [@host] [#channel] <timer>`\nTimer format: 10s, 5m, 1h, 1d\nAttach an image with the command!");
         }
 
         const duration = parseTime(timer);
@@ -508,7 +513,7 @@ client.on("messageCreate", async (message) => {
             prize: prize,
             winners: winners,
             host: host.id,
-            image: image && image.startsWith("http") ? image : null,
+            image: image || null,
             endTime: endTime,
             participants: []
         };
@@ -533,7 +538,7 @@ client.on("messageCreate", async (message) => {
         await endGiveaway(message.channel, activeGiveaway, true);
     }
 
-    if (cmd === "/endgiveaway") {
+    if (cmd === "?endgiveaway") {
         if (!(await isStaff(message.author.id, message.member)))
             return message.reply("Staff only command.");
 
