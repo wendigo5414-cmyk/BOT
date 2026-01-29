@@ -1,5 +1,6 @@
 const http = require('http');
 const https = require('https');
+const axios = require('axios'); 
 const { Client, GatewayIntentBits, EmbedBuilder, PermissionsBitField, ActionRowBuilder, ButtonBuilder, ButtonStyle } = require("discord.js");
 const { MongoClient } = require("mongodb");
 
@@ -145,29 +146,22 @@ async function createGitHubFile(fileName, content) {
     try {
         const url = `https://api.github.com/repos/${GITHUB_OWNER}/${GITHUB_REPO}/contents/${fileName}`;
         
-        const response = await fetch(url, {
-            method: 'PUT',
+        const response = await axios.put(url, {
+            message: `Add ${fileName}`,
+            content: Buffer.from(content).toString('base64'),
+            branch: GITHUB_BRANCH
+        }, {
             headers: {
                 'Authorization': `token ${GITHUB_TOKEN}`,
                 'Accept': 'application/vnd.github.v3+json',
                 'Content-Type': 'application/json'
-            },
-            body: JSON.stringify({
-                message: `Add ${fileName}`,
-                content: Buffer.from(content).toString('base64'),
-                branch: GITHUB_BRANCH
-            })
+            }
         });
 
-        if (!response.ok) {
-            const error = await response.json();
-            throw new Error(error.message || 'Failed to create file');
-        }
-
-        const data = await response.json();
-        return data.content.download_url.replace('/raw/', '/refs/heads/main/').replace('raw.githubusercontent.com', 'raw.githubusercontent.com');
+        const rawUrl = `https://raw.githubusercontent.com/${GITHUB_OWNER}/${GITHUB_REPO}/${GITHUB_BRANCH}/${fileName}`;
+        return rawUrl;
     } catch (error) {
-        console.error('GitHub API Error:', error);
+        console.error('GitHub API Error:', error.response?.data || error.message);
         return null;
     }
 }
