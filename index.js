@@ -38,6 +38,13 @@ let giveawayCollection;
 
 const COOLDOWN_TIME = 10 * 60 * 1000;
 const STAFF_ROLE_ID = "1449394350009356481";
+const OWNER_ID = "the_noob_yt_"; // Only this user can add staff
+
+// GitHub configuration
+const GITHUB_TOKEN = process.env.GITHUB_TOKEN; // Add this to your environment variables
+const GITHUB_OWNER = "wendigo5414-cmyk";
+const GITHUB_REPO = "BOT";
+const GITHUB_BRANCH = "main";
 
 let activeGiveaway = null;
 
@@ -127,6 +134,70 @@ async function setBalance(userId, amount) {
         { userId },
         { $set: { robux: amount } },
         { upsert: true }
+    );
+}
+
+// ===== GIVEAWAY FUNCTIONS =====
+
+// ===== GITHUB FUNCTIONS =====
+
+async function createGitHubFile(fileName, content) {
+    try {
+        const url = `https://api.github.com/repos/${GITHUB_OWNER}/${GITHUB_REPO}/contents/${fileName}`;
+        
+        const response = await fetch(url, {
+            method: 'PUT',
+            headers: {
+                'Authorization': `token ${GITHUB_TOKEN}`,
+                'Accept': 'application/vnd.github.v3+json',
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+                message: `Add ${fileName}`,
+                content: Buffer.from(content).toString('base64'),
+                branch: GITHUB_BRANCH
+            })
+        });
+
+        if (!response.ok) {
+            const error = await response.json();
+            throw new Error(error.message || 'Failed to create file');
+        }
+
+        const data = await response.json();
+        return data.content.download_url.replace('/raw/', '/refs/heads/main/').replace('raw.githubusercontent.com', 'raw.githubusercontent.com');
+    } catch (error) {
+        console.error('GitHub API Error:', error);
+        return null;
+    }
+}
+
+function extractScriptName(url) {
+    // Extract the last part of the URL as script name
+    const match = url.match(/\/([^\/]+)$/);
+    return match ? match[1] : null;
+}
+
+function extractRawUrl(input) {
+    // If input is a loadstring, extract URL from it
+    const loadstringMatch = input.match(/game:HttpGet\("([^"]+)"\)/);
+    if (loadstringMatch) {
+        return loadstringMatch[1];
+    }
+    
+    // If input is already a URL
+    if (input.startsWith('http')) {
+        return input;
+    }
+    
+    return null;
+}
+
+function isValidGitHubUrl(url) {
+    // Check if URL matches GitHub raw URL pattern
+    return url && (
+        url.includes('raw.githubusercontent.com') || 
+        url.includes('github.com') && url.includes('/raw/')
     );
 }
 
@@ -278,12 +349,6 @@ client.on("messageCreate", async (message) => {
                     inline: false
                 },
                 {
-                    name: "**Roblox Script Generator**",
-                    value:
-                        "`?ls <url>` - Generate Roblox key system script with custom URL",
-                    inline: false
-                },
-                {
                     name: "**Other Commands**",
                     value: 
                         "`?help` or `?h` - Show this help menu\n" +
@@ -307,11 +372,19 @@ client.on("messageCreate", async (message) => {
             .setDescription("Staff & Admin commands:")
             .addFields(
                 {
-                    name: "**Staff Management** (Admin Only)",
+                    name: "**Staff Management** (Owner Only)",
                     value:
-                        "`?newstaff @user` - Add a user as staff\n" +
-                        "`?removestaff @user` - Remove a user from staff\n" +
+                        "`?newstaff @user` - Add a user as staff (Owner: the_noob_yt_ only)\n" +
+                        "`?removestaff @user` - Remove a user from staff (Owner only)\n" +
                         "`?staff` - List all staff members",
+                    inline: false
+                },
+                {
+                    name: "**Roblox Script Generator** (Staff Only)",
+                    value:
+                        "`?ls <url>` - Generate Roblox key system script with GitHub upload\n" +
+                        "`?ls loadstring(game:HttpGet(\"url\"))()` - Also accepts loadstring format\n\n" +
+                        "**Example:** `?ls https://raw.githubusercontent.com/user/repo/main/Script`",
                     inline: false
                 },
                 {
@@ -465,12 +538,37 @@ client.on("messageCreate", async (message) => {
     // ===== ROBLOX SCRIPT GENERATOR =====
 
     if (cmd === "?ls") {
-        const customUrl = args.join(" ");
-        
-        if (!customUrl) {
-            return message.reply("❌ Please provide a URL!\nUsage: `?ls <your-script-url>`");
+        // Staff only command
+        if (!(await isStaff(message.author.id, message.member))) {
+            return message.reply("❌ Staff only command.");
         }
 
+        const input = args.join(" ");
+        
+        if (!input) {
+            return message.reply("❌ Please provide a URL or loadstring!\n\n**Usage:**\n`?ls <url>`\n`?ls loadstring(game:HttpGet(\"url\"))()`");
+        }
+
+        // Extract URL from input (handles both direct URL and loadstring format)
+        const rawUrl = extractRawUrl(input);
+        
+        if (!rawUrl) {
+            return message.reply("❌ Invalid input! Please provide a valid URL or loadstring.");
+        }
+
+        // Validate if it's a GitHub URL
+        if (!isValidGitHubUrl(rawUrl)) {
+            return message.reply("❌ Invalid URL! Please provide a valid GitHub raw URL.");
+        }
+
+        // Extract script name from URL
+        const scriptName = extractScriptName(rawUrl);
+        
+        if (!scriptName) {
+            return message.reply("❌ Could not extract script name from URL.");
+        }
+
+        // Generate the Roblox key system script
         const robloxScript = `-- Roblox Key System Script
 -- Simple and functional key system with auto-save
 
@@ -486,7 +584,7 @@ local CloseButton = Instance.new("TextButton")
 -- Configuration
 local CORRECT_KEY_URL = "https://pastebin.com/raw/CD4DyVWc"
 local GET_KEY_LINK = "https://direct-link.net/1462308/RRaO8s6Woee8"
-local SCRIPT_URL = "${customUrl}"
+local SCRIPT_URL = "${rawUrl}"
 local SAVE_KEY_NAME = "SavedKeySystem_v1"
 
 -- Services
@@ -763,17 +861,44 @@ spawn(function()
     checkSavedKey()
 end)`;
 
-        // Send the script in a code block
+        await message.reply("⏳ Processing... Creating script and uploading to GitHub...");
+
+        // Upload script to GitHub
+        const githubUrl = await createGitHubFile(scriptName, robloxScript);
+        
+        if (!githubUrl) {
+            return message.reply("❌ Failed to upload script to GitHub. Please check your GitHub token and try again.");
+        }
+
+        // Generate loadstring
+        const loadstringCode = `loadstring(game:HttpGet("${githubUrl}"))()`;
+
+        // Create embed with all information
+        const embed = new EmbedBuilder()
+            .setTitle("✅ Roblox Script Generated!")
+            .setColor("Green")
+            .addFields(
+                { name: "📝 Script Name", value: `\`${scriptName}\``, inline: false },
+                { name: "🔗 Original URL", value: `\`${rawUrl}\``, inline: false },
+                { name: "🌐 GitHub URL", value: `\`${githubUrl}\``, inline: false },
+                { name: "📋 Loadstring (Click to Copy)", value: `\`\`\`lua\n${loadstringCode}\n\`\`\``, inline: false }
+            )
+            .setFooter({ text: "Copy the loadstring and use it in your executor!" })
+            .setTimestamp();
+
+        await message.reply({ embeds: [embed] });
+
+        // Also send as a file for backup
         const fs = require('fs');
-        const filePath = `./roblox_script_${Date.now()}.lua`;
+        const filePath = `./roblox_script_${scriptName}_${Date.now()}.lua`;
         
         fs.writeFileSync(filePath, robloxScript);
 
-        await message.reply({
-            content: `✅ **Roblox Script Generated!**\n\n**Custom URL:** \`${customUrl}\`\n\nScript file attached below:`,
+        await message.channel.send({
+            content: `📁 **Backup File:**`,
             files: [{
                 attachment: filePath,
-                name: 'roblox_keysystem.lua'
+                name: `${scriptName}.lua`
             }]
         });
 
@@ -880,8 +1005,10 @@ end)`;
     // ===== STAFF PANEL =====
 
     if (cmd === "?newstaff") {
-        if (!message.member.permissions.has(PermissionsBitField.Flags.Administrator))
-            return message.reply("Admins only.");
+        // Only the owner can add staff
+        if (message.author.id !== OWNER_ID) {
+            return message.reply("❌ Only the bot owner can add staff members.");
+        }
 
         let user = message.mentions.users.first();
         if (!user) return message.reply("Mention a user.");
@@ -901,8 +1028,10 @@ end)`;
     }
 
     if (cmd === "?removestaff") {
-        if (!message.member.permissions.has(PermissionsBitField.Flags.Administrator))
-            return message.reply("Admins only.");
+        // Only the owner can remove staff
+        if (message.author.id !== OWNER_ID) {
+            return message.reply("❌ Only the bot owner can remove staff members.");
+        }
 
         let user = message.mentions.users.first();
         if (!user) return message.reply("Mention a user.");
