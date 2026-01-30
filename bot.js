@@ -38,7 +38,7 @@ let giveawayCollection;
 
 const COOLDOWN_TIME = 10 * 60 * 1000;
 const STAFF_ROLE_ID = "1449394350009356481";
-const OWNER_ID = "the_noob_yt_"; // Only this user can add staff
+const OWNER_ID = "1319539205885526018"; // Only this user can add staff
 
 // GitHub configuration
 const GITHUB_TOKEN = process.env.GITHUB_TOKEN; // Add this to your environment variables
