@@ -190,6 +190,42 @@ async function listGitHubFiles() {
     }
 }
 
+async function deleteGitHubFile(fileName) {
+    try {
+        const axios = require('axios');
+        
+        // First, get the file's SHA (required for deletion)
+        const getUrl = `https://api.github.com/repos/${GITHUB_OWNER}/${GITHUB_REPO}/contents/${fileName}`;
+        const getResponse = await axios.get(getUrl, {
+            headers: {
+                'Authorization': `token ${GITHUB_TOKEN}`,
+                'Accept': 'application/vnd.github.v3+json'
+            }
+        });
+
+        const fileSha = getResponse.data.sha;
+
+        // Now delete the file
+        const deleteUrl = `https://api.github.com/repos/${GITHUB_OWNER}/${GITHUB_REPO}/contents/${fileName}`;
+        await axios.delete(deleteUrl, {
+            headers: {
+                'Authorization': `token ${GITHUB_TOKEN}`,
+                'Accept': 'application/vnd.github.v3+json'
+            },
+            data: {
+                message: `Delete ${fileName}`,
+                sha: fileSha,
+                branch: GITHUB_BRANCH
+            }
+        });
+
+        return true;
+    } catch (error) {
+        console.error('GitHub Delete Error:', error.response?.data || error.message);
+        return false;
+    }
+}
+
 function extractScriptName(url) {
     // Extract the last part of the URL as script name
     const match = url.match(/\/([^\/]+)$/);
@@ -402,10 +438,10 @@ client.on("messageCreate", async (message) => {
                     value:
                         "`?ls <url>` or `?loadingstring <url>` - Generate script with GitHub upload\n" +
                         "`?ls <number>` or `?loadingstring <number>` - Get loadstring by script number\n" +
-                        "`?lsl` or `?loadingstringlist` - List all scripts in repository\n\n" +
-                        "**Accepts:** URLs or loadstring format\n" +
-                        "**Example:** `?ls https://raw.githubusercontent.com/user/repo/main/Script`\n" +
-                        "**Example:** `?lsl` → `?ls 1`",
+                        "`?lsl` or `?loadingstringlist` - List all scripts in repository\n" +
+                        "`?lsd <number>` or `?loadingstringdelete <number>` - Delete script (Owner only)\n" +
+                        "`?lsd all` - Delete ALL scripts with confirmation (Owner only)\n\n" +
+                        "**Example:** `?lsl` → `?ls 1` → `?lsd 1`",
                     inline: false
                 },
                 {
@@ -558,7 +594,7 @@ client.on("messageCreate", async (message) => {
 
     // ===== ROBLOX SCRIPT GENERATOR =====
 
-    if (cmd === "?ls") {
+    if (cmd === "?ls" || cmd === "?loadingstring") {
         // Staff only command
         if (!(await isStaff(message.author.id, message.member))) {
             return message.reply("❌ Staff only command.");
@@ -567,9 +603,54 @@ client.on("messageCreate", async (message) => {
         const input = args.join(" ");
         
         if (!input) {
-            return message.reply("❌ Please provide a URL or loadstring!\n\n**Usage:**\n`?ls <url>`\n`?ls loadstring(game:HttpGet(\"url\"))()`");
+            return message.reply("❌ Please provide a URL, loadstring, or script number!\n\n**Usage:**\n`?ls <url>`\n`?ls <number>`\n`?ls loadstring(...)`");
         }
 
+        // CHECK IF INPUT IS A NUMBER FIRST (Priority #1)
+        if (/^\d+$/.test(input.trim())) {
+            const scriptNumber = parseInt(input);
+
+            await message.reply("⏳ Fetching script...");
+
+            const files = await listGitHubFiles();
+
+            if (!files) {
+                return message.reply("❌ Failed to fetch scripts from GitHub.");
+            }
+
+            if (files.length === 0) {
+                return message.reply("📭 No scripts found in the repository yet!");
+            }
+
+            if (scriptNumber < 1 || scriptNumber > files.length) {
+                return message.reply(`❌ Invalid number! Please choose between 1 and ${files.length}.\nUse \`?lsl\` to see all scripts.`);
+            }
+
+            const scriptName = files[scriptNumber - 1];
+            const githubUrl = `https://raw.githubusercontent.com/${GITHUB_OWNER}/${GITHUB_REPO}/${GITHUB_BRANCH}/${scriptName}`;
+            const loadstringCode = `loadstring(game:HttpGet("${githubUrl}"))()`;
+
+            const embed = new EmbedBuilder()
+                .setTitle("✅ Script Loadstring")
+                .setColor("Green")
+                .addFields(
+                    { name: "📝 Script Name", value: `\`${scriptName}\``, inline: false },
+                    { name: "🔢 Number", value: `\`${scriptNumber}\``, inline: true },
+                    { name: "🌐 GitHub URL", value: `\`${githubUrl}\``, inline: false }
+                )
+                .setFooter({ text: "Copy the loadstring below!" })
+                .setTimestamp();
+
+            await message.reply({ embeds: [embed] });
+            
+            // Send loadstring as clean text
+            await message.channel.send(loadstringCode);
+
+            return;
+        }
+
+        // IF NOT A NUMBER, process as URL/loadstring (original functionality)
+        
         // Extract URL from input (handles both direct URL and loadstring format)
         const rawUrl = extractRawUrl(input);
         
@@ -973,17 +1054,69 @@ end)`;
         return message.reply({ embeds: [embed] });
     }
 
-    // ===== GET LOADSTRING BY NUMBER =====
+    // ===== DELETE LOADSTRING COMMAND =====
 
-    if ((cmd === "?ls" || cmd === "?loadingstring") && args[0] && !isNaN(args[0])) {
-        // Staff only command
-        if (!(await isStaff(message.author.id, message.member))) {
-            return message.reply("❌ Staff only command.");
+    if (cmd === "?lsd" || cmd === "?lsdelete" || cmd === "?lsdel" || cmd === "?loadingstringdelete") {
+        // Owner only command
+        if (message.author.id !== OWNER_ID) {
+            return message.reply("❌ Only the bot owner can delete scripts.");
         }
 
-        const scriptNumber = parseInt(args[0]);
+        const input = args[0];
 
-        await message.reply("⏳ Fetching script...");
+        if (!input) {
+            return message.reply("❌ Please provide a script number or 'all'!\n\n**Usage:**\n`?lsd <number>`\n`?lsd all`");
+        }
+
+        // Handle "all" deletion
+        if (input.toLowerCase() === "all") {
+            await message.reply("⚠️ **WARNING:** This will delete ALL scripts from the repository!\n\nReact with ✅ to confirm or ❌ to cancel.");
+
+            const confirmMsg = await message.channel.send("React within 30 seconds...");
+
+            await confirmMsg.react("✅");
+            await confirmMsg.react("❌");
+
+            const filter = (reaction, user) => {
+                return ['✅', '❌'].includes(reaction.emoji.name) && user.id === message.author.id;
+            };
+
+            const collected = await confirmMsg.awaitReactions({ filter, max: 1, time: 30000, errors: ['time'] })
+                .catch(() => null);
+
+            if (!collected || collected.first().emoji.name === '❌') {
+                return message.reply("❌ Deletion cancelled.");
+            }
+
+            // Confirmed - delete all
+            await message.reply("⏳ Deleting all scripts...");
+
+            const files = await listGitHubFiles();
+
+            if (!files || files.length === 0) {
+                return message.reply("📭 No scripts to delete!");
+            }
+
+            let deleted = 0;
+            let failed = 0;
+
+            for (const file of files) {
+                const success = await deleteGitHubFile(file);
+                if (success) deleted++;
+                else failed++;
+            }
+
+            return message.reply(`✅ Deleted ${deleted} scripts!${failed > 0 ? `\n❌ Failed to delete ${failed} scripts.` : ''}`);
+        }
+
+        // Handle number deletion
+        if (!/^\d+$/.test(input)) {
+            return message.reply("❌ Invalid input! Please provide a valid number or 'all'.");
+        }
+
+        const scriptNumber = parseInt(input);
+
+        await message.reply("⏳ Fetching scripts...");
 
         const files = await listGitHubFiles();
 
@@ -991,31 +1124,25 @@ end)`;
             return message.reply("❌ Failed to fetch scripts from GitHub.");
         }
 
+        if (files.length === 0) {
+            return message.reply("📭 No scripts found in the repository!");
+        }
+
         if (scriptNumber < 1 || scriptNumber > files.length) {
-            return message.reply(`❌ Invalid number! Please choose between 1 and ${files.length}.\nUse \`?lsl\` to see all scripts.`);
+            return message.reply(`❌ Invalid number! No script exists at position ${scriptNumber}.\nTotal scripts: ${files.length}\nUse \`?lsl\` to see all scripts.`);
         }
 
         const scriptName = files[scriptNumber - 1];
-        const githubUrl = `https://raw.githubusercontent.com/${GITHUB_OWNER}/${GITHUB_REPO}/${GITHUB_BRANCH}/${scriptName}`;
-        const loadstringCode = `loadstring(game:HttpGet("${githubUrl}"))()`;
 
-        const embed = new EmbedBuilder()
-            .setTitle("✅ Script Loadstring")
-            .setColor("Green")
-            .addFields(
-                { name: "📝 Script Name", value: `\`${scriptName}\``, inline: false },
-                { name: "🔢 Number", value: `\`${scriptNumber}\``, inline: true },
-                { name: "🌐 GitHub URL", value: `\`${githubUrl}\``, inline: false }
-            )
-            .setFooter({ text: "Copy the loadstring below!" })
-            .setTimestamp();
+        await message.reply(`⏳ Deleting script **${scriptName}**...`);
 
-        await message.reply({ embeds: [embed] });
-        
-        // Send loadstring as clean text
-        await message.channel.send(loadstringCode);
+        const success = await deleteGitHubFile(scriptName);
 
-        return;
+        if (success) {
+            return message.reply(`✅ Successfully deleted script: **${scriptName}**`);
+        } else {
+            return message.reply(`❌ Failed to delete script: **${scriptName}**\nPlease check GitHub token permissions.`);
+        }
     }
 
     // ===== GIVEAWAY COMMANDS =====
