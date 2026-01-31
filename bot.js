@@ -366,13 +366,49 @@ client.once("ready", async () => {
         
         if (timeLeft > 0) {
             activeGiveaway = giveaway;
-            setTimeout(async () => {
-                const channel = client.channels.cache.get(giveaway.channelId);
-                if (channel) await endGiveaway(channel, giveaway);
-            }, timeLeft);
+            
+            // Verify the message still exists
+            try {
+                const channel = await client.channels.fetch(giveaway.channelId);
+                if (channel) {
+                    await channel.messages.fetch(giveaway.messageId);
+                    console.log(`✅ Restored giveaway in channel ${giveaway.channelId}, ends in ${Math.floor(timeLeft / 1000)}s`);
+                    
+                    // Set up hourly updates
+                    const updateInterval = setInterval(async () => {
+                        if (!activeGiveaway || activeGiveaway.messageId !== giveaway.messageId) {
+                            clearInterval(updateInterval);
+                            return;
+                        }
+                        await giveawayCollection.updateOne(
+                            { messageId: giveaway.messageId },
+                            { $set: { participants: activeGiveaway.participants, lastUpdate: Date.now() } }
+                        );
+                    }, 3600000); // Every hour
+                    
+                    // Schedule giveaway end
+                    setTimeout(async () => {
+                        clearInterval(updateInterval);
+                        const ch = await client.channels.fetch(giveaway.channelId).catch(() => null);
+                        if (ch) await endGiveaway(ch, activeGiveaway);
+                    }, timeLeft);
+                } else {
+                    throw new Error("Channel not found");
+                }
+            } catch (error) {
+                console.log("❌ Giveaway message not found, cleaning up...");
+                await giveawayCollection.deleteOne({ messageId: giveaway.messageId });
+                activeGiveaway = null;
+            }
         } else {
-            // Giveaway already expired, clean it up
-            await giveawayCollection.deleteOne({ messageId: giveaway.messageId });
+            // Giveaway already expired, end it now
+            console.log("⏰ Giveaway expired, ending now...");
+            const channel = await client.channels.fetch(giveaway.channelId).catch(() => null);
+            if (channel) {
+                await endGiveaway(channel, giveaway);
+            } else {
+                await giveawayCollection.deleteOne({ messageId: giveaway.messageId });
+            }
         }
     }
 });
@@ -670,6 +706,9 @@ client.on("messageCreate", async (message) => {
             `**User:** <@${user.id}>\n**Amount:** ${amount} R$\n**New Balance:** ${(await getBalance(user.id)).robux} R$`
         );
 
+        // Delete command message
+        setTimeout(() => message.delete().catch(() => {}), 2000);
+
         return message.reply(`✅ Given ${amount} Robux to <@${user.id}>`);
     }
 
@@ -692,6 +731,9 @@ client.on("messageCreate", async (message) => {
             `**User:** <@${user.id}>\n**Amount:** ${amount} R$`
         );
 
+        // Delete command message
+        setTimeout(() => message.delete().catch(() => {}), 2000);
+
         return message.reply(`✅ Set <@${user.id}>'s balance to ${amount} Robux`);
     }
 
@@ -713,6 +755,9 @@ client.on("messageCreate", async (message) => {
         await sendLog(message.guild, "Robux Taken", message.author, 
             `**User:** <@${user.id}>\n**Amount:** ${amount} R$\n**New Balance:** ${(await getBalance(user.id)).robux} R$`
         );
+
+        // Delete command message
+        setTimeout(() => message.delete().catch(() => {}), 2000);
 
         return message.reply(`✅ Taken ${amount} Robux from <@${user.id}>`);
     }
@@ -1317,19 +1362,42 @@ end)`;
         activeGiveaway = {
             messageId: giveawayMsg.id,
             channelId: channel.id,
+            guildId: message.guild.id,
             prize: prize,
             winners: winners,
             host: host.id,
             image: image || null,
             endTime: endTime,
+            createdAt: Date.now(),
             participants: []
         };
 
         await giveawayCollection.insertOne(activeGiveaway);
 
+        // Send log
+        await sendLog(message.guild, "Giveaway Created", message.author,
+            `**Prize:** ${prize} R$\n**Winners:** ${winners}\n**Channel:** <#${channel.id}>\n**Duration:** ${timer}\n**Host:** <@${host.id}>`
+        );
+
+        // Delete command message
+        setTimeout(() => message.delete().catch(() => {}), 2000);
+
         message.reply(`✅ Giveaway created in <#${channel.id}>!`);
 
+        // Update DB every hour to track progress
+        const updateInterval = setInterval(async () => {
+            if (!activeGiveaway || activeGiveaway.messageId !== giveawayMsg.id) {
+                clearInterval(updateInterval);
+                return;
+            }
+            await giveawayCollection.updateOne(
+                { messageId: giveawayMsg.id },
+                { $set: { participants: activeGiveaway.participants, lastUpdate: Date.now() } }
+            );
+        }, 3600000); // Every hour
+
         setTimeout(async () => {
+            clearInterval(updateInterval);
             await endGiveaway(channel, activeGiveaway);
         }, duration);
     }
@@ -1341,6 +1409,9 @@ end)`;
         if (!activeGiveaway) {
             return message.reply("❌ No active giveaway to reroll!");
         }
+
+        // Delete command message
+        setTimeout(() => message.delete().catch(() => {}), 2000);
 
         await endGiveaway(message.channel, activeGiveaway, true);
     }
@@ -1354,6 +1425,15 @@ end)`;
         }
 
         const channel = client.channels.cache.get(activeGiveaway.channelId);
+        
+        // Send log
+        await sendLog(message.guild, "Giveaway Ended Early", message.author,
+            `**Channel:** <#${activeGiveaway.channelId}>\n**Participants:** ${activeGiveaway.participants.length}`
+        );
+
+        // Delete command message
+        setTimeout(() => message.delete().catch(() => {}), 2000);
+
         await endGiveaway(channel, activeGiveaway);
         message.reply("✅ Giveaway ended!");
     }
@@ -1380,6 +1460,14 @@ end)`;
             }
         }
 
+        // Send log
+        await sendLog(message.guild, "Staff Added", message.author,
+            `**User:** ${user.tag} (${user.id})\n**Role Assigned:** <@&${STAFF_ROLE_ID}>`
+        );
+
+        // Delete command message
+        setTimeout(() => message.delete().catch(() => {}), 2000);
+
         return message.reply(`✅ ${user.tag} added as staff and role assigned.`);
     }
 
@@ -1402,6 +1490,14 @@ end)`;
                 console.error("Failed to remove role:", error);
             }
         }
+
+        // Send log
+        await sendLog(message.guild, "Staff Removed", message.author,
+            `**User:** ${user.tag} (${user.id})\n**Role Removed:** <@&${STAFF_ROLE_ID}>`
+        );
+
+        // Delete command message
+        setTimeout(() => message.delete().catch(() => {}), 2000);
 
         return message.reply(`❌ ${user.tag} removed from staff.`);
     }
@@ -1433,12 +1529,21 @@ end)`;
     if (["?ban", "?kick", "?timeout", "?untimeout", "?warn", "?clear"].includes(cmd)) {
         if (!(await isStaff(message.author.id, message.member)))
             return message.reply("Staff only command.");
+        
+        // Delete command message after 2 seconds
+        setTimeout(() => message.delete().catch(() => {}), 2000);
     }
 
     if (cmd === "?ban") {
         let m = message.mentions.members.first();
         if (!m) return message.reply("Mention user.");
         await m.ban({ reason: args.slice(1).join(" ") || "No reason" });
+        
+        // Send log
+        await sendLog(message.guild, "User Banned", message.author,
+            `**User:** ${m.user.tag} (${m.id})\n**Reason:** ${args.slice(1).join(" ") || "No reason"}`
+        );
+        
         return message.reply(`🔨 Banned ${m.user.tag}`);
     }
 
@@ -1446,6 +1551,12 @@ end)`;
         let m = message.mentions.members.first();
         if (!m) return message.reply("Mention user.");
         await m.kick(args.slice(1).join(" ") || "No reason");
+        
+        // Send log
+        await sendLog(message.guild, "User Kicked", message.author,
+            `**User:** ${m.user.tag} (${m.id})\n**Reason:** ${args.slice(1).join(" ") || "No reason"}`
+        );
+        
         return message.reply(`👢 Kicked ${m.user.tag}`);
     }
 
@@ -1458,6 +1569,12 @@ end)`;
         if (!ms) return message.reply("Use 10m or 1h");
 
         await m.timeout(ms);
+        
+        // Send log
+        await sendLog(message.guild, "User Timed Out", message.author,
+            `**User:** ${m.user.tag} (${m.id})\n**Duration:** ${args[1]}`
+        );
+        
         return message.reply(`⏱ Timed out ${m.user.tag}`);
     }
 
@@ -1465,6 +1582,12 @@ end)`;
         let m = message.mentions.members.first();
         if (!m) return message.reply("Mention user.");
         await m.timeout(null);
+        
+        // Send log
+        await sendLog(message.guild, "Timeout Removed", message.author,
+            `**User:** ${m.user.tag} (${m.id})`
+        );
+        
         return message.reply(`🔓 Timeout removed`);
     }
 
@@ -1478,6 +1601,11 @@ end)`;
             reason: args.slice(1).join(" ") || "No reason",
             date: new Date()
         });
+
+        // Send log
+        await sendLog(message.guild, "User Warned", message.author,
+            `**User:** ${user.tag} (${user.id})\n**Reason:** ${args.slice(1).join(" ") || "No reason"}`
+        );
 
         return message.reply(`⚠ Warned ${user.tag}`);
     }
