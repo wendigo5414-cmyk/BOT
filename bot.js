@@ -40,8 +40,6 @@ let logCollection;
 const COOLDOWN_TIME = 10 * 60 * 1000;
 const STAFF_ROLE_ID = "1449394350009356481";
 const OWNER_ID = "1319539205885526018"; // Only this user can add staff
-const BYPASS_CHANNEL_ID = "1460943448017207479"; // Channel for bypass bot
-const BYPASS_BOT_ID = "1383962854587236393"; // Zen Bypass bot ID
 
 // GitHub configuration
 const GITHUB_TOKEN = process.env.GITHUB_TOKEN; // Add this to your environment variables
@@ -727,11 +725,14 @@ client.on("messageCreate", async (message) => {
             return message.reply("❌ Staff only command.");
         }
 
-        const input = args.join(" ");
+        let input = args.join(" ");
         
         if (!input) {
             return message.reply("❌ Please provide a URL, loadstring, or script number!\n\n**Usage:**\n`?ls <url>`\n`?ls <number>`\n`?ls loadstring(...)`");
         }
+
+        // Remove backticks (`) from input
+        input = input.replace(/`/g, "").trim();
 
         // CHECK IF INPUT IS A NUMBER FIRST (Priority #1)
         if (/^\d+$/.test(input.trim())) {
@@ -814,7 +815,7 @@ local CloseButton = Instance.new("TextButton")
 local CORRECT_KEY_URL = "https://pastebin.com/raw/CD4DyVWc"
 local GET_KEY_LINK = "https://direct-link.net/1462308/RRaO8s6Woee8"
 local SCRIPT_URL = "${rawUrl}"
-local SAVE_KEY_NAME = "SavedKeySystem_v1"
+local SAVE_KEY_NAME = "SavedKeySystem_v1.txt"
 
 -- Services
 local HttpService = game:GetService("HttpService")
@@ -824,16 +825,23 @@ local LocalPlayer = Players.LocalPlayer
 
 -- Functions
 local function getSavedKey()
-    local success, savedKey = pcall(function()
-        return LocalPlayer:GetAttribute(SAVE_KEY_NAME)
-    end)
-    return success and savedKey or nil
+    if readfile then
+        local success, result = pcall(function()
+            return readfile(SAVE_KEY_NAME)
+        end)
+        if success and result then
+            return result
+        end
+    end
+    return nil
 end
 
 local function saveKey(key)
-    pcall(function()
-        LocalPlayer:SetAttribute(SAVE_KEY_NAME, key)
-    end)
+    if writefile then
+        pcall(function()
+            writefile(SAVE_KEY_NAME, key)
+        end)
+    end
 end
 
 local function fetchCorrectKey()
@@ -1491,94 +1499,6 @@ end)`;
         } catch (error) {
             console.error("Clear error:", error);
             return message.channel.send("Failed to clear messages. (Messages older than 14 days cannot be bulk deleted)");
-        }
-    }
-
-    // ===== BYPASS COMMAND =====
-
-    if (cmd === "?bypass") {
-        const url = args[0];
-
-        if (!url) {
-            return message.reply("❌ Please provide a URL to bypass!\n**Usage:** `?bypass <url>`");
-        }
-
-        const bypassChannel = await client.channels.fetch(BYPASS_CHANNEL_ID).catch(() => null);
-        
-        if (!bypassChannel) {
-            return message.reply("❌ Bypass channel not found!");
-        }
-
-        const processingMsg = await message.reply(`<a:loading:1135544416933785651> Processing bypass...`);
-
-        try {
-            // Send bypass command to the Zen Bypass bot
-            await bypassChannel.send(`/bypass url:${url}`);
-
-            // Wait for bot response
-            const filter = (m) => m.author.id === BYPASS_BOT_ID;
-            
-            let finalUrl = null;
-            let retryCount = 0;
-            const maxRetries = 20; // Max 20 retries (58 sec each = ~19 minutes max)
-
-            while (!finalUrl && retryCount < maxRetries) {
-                const collected = await bypassChannel.awaitMessages({ 
-                    filter, 
-                    max: 1, 
-                    time: 60000 
-                }).catch(() => null);
-
-                if (!collected || collected.size === 0) {
-                    await processingMsg.edit("❌ Bypass bot did not respond in time!");
-                    return;
-                }
-
-                const botReply = collected.first();
-                const content = botReply.content;
-
-                // Check for invalid URL error
-                if (content.includes("Your input is invalid, enter a valid URL")) {
-                    await processingMsg.edit("<:xmark2:1438055775464591503> | Your input is invalid, enter a valid URL.");
-                    return;
-                }
-
-                // Check for "Bypass Success" embed
-                if (botReply.embeds.length > 0) {
-                    const embed = botReply.embeds[0];
-                    
-                    if (embed.title?.includes("Bypass Success")) {
-                        // Extract loadstring from embed description
-                        const description = embed.description || "";
-                        
-                        // Look for loadstring pattern
-                        const loadstringMatch = description.match(/loadstring\(game:HttpGet\("([^"]+)"\)\)\(\)/);
-                        
-                        if (loadstringMatch) {
-                            finalUrl = loadstringMatch[0]; // Get full loadstring
-                            break;
-                        }
-                    }
-                }
-
-                // If still no loadstring found, retry after 58 seconds
-                retryCount++;
-                if (!finalUrl && retryCount < maxRetries) {
-                    await processingMsg.edit(`<a:loading:1135544416933785651> Processing bypass... (Retry ${retryCount}/${maxRetries})`);
-                    await new Promise(resolve => setTimeout(resolve, 58000)); // Wait 58 seconds
-                    await bypassChannel.send(`/bypass url:${url}`); // Retry
-                }
-            }
-
-            if (finalUrl) {
-                await processingMsg.edit(`<a:loading:1135544416933785651> Processing bypass...\n\n**URL:**\n\`\`\`\n${finalUrl}\n\`\`\``);
-            } else {
-                await processingMsg.edit("❌ Could not extract bypassed URL after multiple retries!");
-            }
-
-        } catch (error) {
-            console.error("Bypass error:", error);
-            await processingMsg.edit("❌ An error occurred during bypass process!");
         }
     }
 });
